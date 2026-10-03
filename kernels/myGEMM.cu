@@ -95,6 +95,9 @@ extern "C" cudaError_t launchGEMM(const float* A, const float* B, float* C,
     dim3 threads(tilesize, tilesize);
     dim3 blocks((N + threads.x * TN - 1) / (threads.x * TN), 
                 (M + threads.y * TM - 1) / (threads.y * TM));
+    
+    //for the sake of my QKV projections and transformer MLPs, I am not using biases so beta will be set to 0.
+    if (beta == 0.0f) cudaMemset(C, 0, M * N * sizeof(float)); 
     GEMM<<<blocks, threads>>>(A, B, C, M, N, K, alpha, beta, GELU_bool);
     return cudaGetLastError();
 }
