@@ -4,7 +4,7 @@ import triton.language as tl
 
 #learned triton as I wrote this, so spammed comments for learning purposes. 
 @triton.jit
-def __fwd_kernel_flash(Q, K, V, O, N, inv_sq_d, 
+def __fwd_kernel_flash(Q, K, V, O, N, qk_scale, #qk scale is 1/sqrt(d) * log_2(e), factoring in the log_2 optimization with the head dim scale. 
                         Br: tl.constexpr, Bc: tl.constexpr, #standard that these should be known at compile time. 
                         d: tl.constexpr, causal_bool: tl.constexpr):
     #tl.program_id(axis) is analogous to blockIdx.axis in CUDA, but represents instances of the kernel
@@ -21,4 +21,66 @@ def __fwd_kernel_flash(Q, K, V, O, N, inv_sq_d,
         #Q + base finds the offset row for our tile. Then we load in Br rows dictated by offs_m, each one offs_d columns. 
         Q + base + offs_m[:, None] * d + offs_d[None, :], #adding length one axis to offset, gets us to the proper row (dependent on offs_m)
         mask=offs_m[:, None] < N, 
+        other=0.0 #default if mask is false (bounds check)
     )
+
+    #online softmax states stored for each query row. 
+    m_i = tl.full([Br], -float('inf'), tl.float32) #running max of scores
+    l_i = tl.zeros([Br], tl.float32) #running sum of exp(score-m_i) for softmax denominator
+    acc = tl.zeros([Br, d], tl.float32) #tracks softmax numerator, exp(score-m_i) * V (value). 
+
+    if causal_bool: #create causal mask
+        high = tl.minimum(((pid_m + 1) * Br), N) #max rows to load from K/V tiles to make it causal
+    else:
+        high = N
+    
+    #inner loop over K/V
+    for start in range(0, high, Bc): #iterate over tiles by adding +Bc until mask limit
+        cols = start + offs_n
+
+        k = tl.load(
+            K + base + cols[None, :] * d + offs_d[:, None], #K is transposed so we physically are still loading contiguous rows
+            mask=cols[None, :] < N,
+            other=0.0
+        )
+
+        s = tl.dot(q, k) * qk_scale #multiply the QK tiles with dims Br x d @ d x Bc to get a Br x Bc tile space of O matrix. 
+
+        mask = cols[None, :] < N
+        if causal_bool:
+            #sets mask for anywhere where the attention weight matrix key index <= query index, masking out everything else. 
+            mask = mask & (cols[None, :] <= offs_m[:, None]) 
+
+        s = tl.where(mask, s, -float('inf')) #this is there the real masking happens. Doesnt contribute to softmax. 
+
+
+        #time for the online softmax
+        m_new = tl.maximum(m_i, tl.max(s, 1)) #row-wise max for the keys in the tile
+        #e^x = 2^(x log_2(e)), givings us log_2(e) as a constant. 
+        #Instead of exp, we use this because exp2 is faster on hardware.
+        #due to log_2(e) being a constant, it's folded into qk_scale. 
+        p = tl.math.exp2(s - m_new[:, None])
+        adj = tl.math.exp2(m_i - m_new) #adjustment factor
+
+        l_i = l_i * adj + tl.sum(p, 1) #need to sum for softmax denominator
+        #online softmax math is confusing...
+
+        v = tl.load(
+            V + base + cols[:, None] * d + offs_d[None, :],
+            mask=cols[:, None] < N,
+            other=0.0
+        )
+        acc = acc * adj[:, None] + tl.dot(p, v)
+        m_i = m_new
+    
+    #final division! divide all the attention weights by the softmax denominator.
+    acc = acc / l_i[:, None]
+
+    #store result in output
+    tl.store(
+        O + base + offs_m[:, None] * d + offs_d[None, :],
+        acc,
+        mask=offs_m[:, None] < N
+    )
+
+        
