@@ -1,10 +1,14 @@
+import torch
 import triton
 import triton.language as tl
 
 
+
+LOG2E = 1.4426950408889634  #log_2(e) for fast exp2 -> exp
+
 #learned triton as I wrote this, so spammed comments for learning purposes. 
 @triton.jit
-def __fwd_kernel_flash(Q, K, V, O, N, qk_scale, #qk scale is 1/sqrt(d) * log_2(e), factoring in the log_2 optimization with the head dim scale. 
+def __fwd_kernel_flash_triton(Q, K, V, O, N, qk_scale, #qk scale is 1/sqrt(d) * log_2(e), factoring in the log_2 optimization with the head dim scale. 
                         Br: tl.constexpr, Bc: tl.constexpr, #standard that these should be known at compile time. 
                         d: tl.constexpr, causal_bool: tl.constexpr):
     #tl.program_id(axis) is analogous to blockIdx.axis in CUDA, but represents instances of the kernel
@@ -83,4 +87,46 @@ def __fwd_kernel_flash(Q, K, V, O, N, qk_scale, #qk scale is 1/sqrt(d) * log_2(e
         mask=offs_m[:, None] < N
     )
 
-        
+def __fwd_kernel_flash(Q, K, V, causal=False, Br=64, Bc=64):
+    B, H, N, d = Q.shape
+    Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
+    O = torch.empty_like(q)
+    grid = (triton.cdiv(N, Br), B * H)
+    qk_scale = (d ** -0.5) * LOG2E #see top for LOG2E def
+    __fwd_kernel_flash_triton[grid](Q, K, V, O, N, qk_scale, Br, Bc, d, casual_bool, num_warps=4, num_stages=2)
+    #last two args are optional but like cuda kernel launch, but for triton.
+    return O
+
+
+"""
+Flash attention algorithm flow:
+
+
+
+load Q tile
+
+m = -inf
+l = 0
+acc = 0
+
+for K/V tile:
+    load K
+    load V
+
+    scores = Q @ K.T
+    scores *= scale
+
+    apply causal mask
+
+    # online softmax
+    m_new = max(m, rowmax(scores))
+    p = exp(scores - m_new)
+
+    acc = acc * exp(m - m_new) + p @ V
+    l   = l * exp(m - m_new) + sum(p)
+
+    m = m_new
+
+O = acc / l
+store O
+"""
