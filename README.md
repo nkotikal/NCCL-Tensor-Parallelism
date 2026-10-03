@@ -1,5 +1,5 @@
 # NCCL-Tensor-Parallelism
-Optimized GEMM implemented under Tensor Parallelism using NCCL in a Transformer block implemented with FlashAttention in Pytorch, validated and benchmarked against PyTorch standard implementations
+Optimized GEMM implemented under Tensor Parallelism using NCCL in a Transformer block implemented with causal FlashAttention in Triton through Pytorch, validated and benchmarked against PyTorch standard implementations
 
 \<In progress>
 
