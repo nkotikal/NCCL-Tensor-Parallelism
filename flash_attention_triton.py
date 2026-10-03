@@ -90,10 +90,10 @@ def __fwd_kernel_flash_triton(Q, K, V, O, N, qk_scale, #qk scale is 1/sqrt(d) * 
 def __fwd_kernel_flash(Q, K, V, causal=False, Br=64, Bc=64):
     B, H, N, d = Q.shape
     Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
-    O = torch.empty_like(q)
+    O = torch.empty_like(Q)
     grid = (triton.cdiv(N, Br), B * H)
     qk_scale = (d ** -0.5) * LOG2E #see top for LOG2E def
-    __fwd_kernel_flash_triton[grid](Q, K, V, O, N, qk_scale, Br, Bc, d, casual_bool, num_warps=4, num_stages=2)
+    __fwd_kernel_flash_triton[grid](Q, K, V, O, N, qk_scale, Br=Br, Bc=Bc, d=d, causal_bool=causal, num_warps=4, num_stages=2)
     #last two args are optional but like cuda kernel launch, but for triton.
     return O
 

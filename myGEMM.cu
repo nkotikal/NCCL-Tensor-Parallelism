@@ -2,21 +2,24 @@
 
 #define tilesize 32
 #define TM 4 //row granularity of a thread
-//we implement 4-element 1D register tiling in order to compute 4 elements per thread. 
+#define TN 2
+//I add the parameter TN to also expand out more elements of B. TM loads 4 rows of A. TN will load 2 columns of B
+
+__device__ float GELU(float x) {
+    float k = 0.7978845608f;  // sqrt(2/pi)
+    return 0.5f * x * (1.0f + tanhf(k * (x + 0.044715f * x * x * x)));
+}
 
 
-//1D register tiled handwritten GEMM
-__global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int K, float alpha, float beta) {
-    int col = blockDim.x * blockIdx.x + threadIdx.x;
+__global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int K, float alpha, float beta, bool GELU_bool) {
+    int col = (blockDim.x * blockIdx.x + threadIdx.x)*TN;
     int row = (blockDim.y * blockIdx.y + threadIdx.y) * TM;
 
-    __shared__ float Atile[tilesize*TM][tilesize], Btile[tilesize][tilesize]; //allocate 128 rows for A to be able to compute 4 per thread
+    __shared__ float Atile[tilesize*TM][tilesize], Btile[tilesize][tilesize*TN]; 
 
+    //the "f" sums represent the first row and the "s" sums represent the second row
+    float sum1f = 0.0f, sum2f = 0.0f, sum3f = 0.0f, sum4f = 0.0f, sum1s = 0.0f, sum2s = 0.0f, sum3s = 0.0f, sum4s = 0.0f;
 
-    float sum1 = 0.0f;
-    float sum2 = 0.0f;
-    float sum3 = 0.0f;
-    float sum4 = 0.0f;
     //iterate tile along shared dim K
     for (int tile = 0; tile < (K + tilesize - 1)/tilesize; tile++) {
         int tilecolA = tile * tilesize + threadIdx.x;
@@ -27,40 +30,72 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
         Atile[threadIdx.y * TM + 2][threadIdx.x] = (row + 2 < M && tilecolA < K) ? A[(row + 2) * K + tilecolA] : 0.0f;
         Atile[threadIdx.y * TM + 3][threadIdx.x] = (row + 3 < M && tilecolA < K) ? A[(row + 3) * K + tilecolA] : 0.0f;
 
-        Btile[threadIdx.y][threadIdx.x] = (tilerowB < K && col < N) ? B[tilerowB * N + col] : 0.0f;
+        //load in 2 columns at a time of B tile
+        Btile[threadIdx.y][threadIdx.x * TN] = (tilerowB < K && col < N) ? B[tilerowB * N + col] : 0.0f;
+        Btile[threadIdx.y][threadIdx.x * TN + 1] = (tilerowB < K && col + 1 < N) ? B[tilerowB * N + col + 1] : 0.0f;
         __syncthreads();
 
         for (int p = 0; p < tilesize; p++) {
-            float B_reuse = Btile[p][threadIdx.x]; //not REALLY necessary because compiler will do this anyway, but wanted to show what the point was of this
-            sum1 += Atile[threadIdx.y * TM][p] * B_reuse;
-            sum2 += Atile[threadIdx.y * TM + 1][p] * B_reuse;
-            sum3 += Atile[threadIdx.y * TM + 2][p] * B_reuse;
-            sum4 += Atile[threadIdx.y * TM + 3][p] * B_reuse;
+            float B_reuse_f = Btile[p][threadIdx.x * TN];
+            float B_reuse_s = Btile[p][threadIdx.x * TN + 1];
+            sum1f += Atile[threadIdx.y * TM][p] * B_reuse_f;
+            sum2f += Atile[threadIdx.y * TM + 1][p] * B_reuse_f;
+            sum3f += Atile[threadIdx.y * TM + 2][p] * B_reuse_f;
+            sum4f += Atile[threadIdx.y * TM + 3][p] * B_reuse_f;
+
+            sum1s += Atile[threadIdx.y * TM][p] * B_reuse_s;
+            sum2s += Atile[threadIdx.y * TM + 1][p] * B_reuse_s;
+            sum3s += Atile[threadIdx.y * TM + 2][p] * B_reuse_s;
+            sum4s += Atile[threadIdx.y * TM + 3][p] * B_reuse_s;
 
         }
         
         __syncthreads();
     }
 
+    //I think for my learning purposes it's good for me to map all this out. 
     if (col < N) {
-        if (row < M)
-            C[row * N + col] = alpha * sum1 + beta * C[row * N + col];
-        if (row + 1 < M)
-            C[(row+1) * N + col] = alpha * sum2 + beta * C[(row+1) * N + col];
-        if (row + 2 < M)
-            C[(row+2) * N + col] = alpha * sum3 + beta * C[(row+2) * N + col];
-        if (row + 3 < M)
-            C[(row+3) * N + col] = alpha * sum4 + beta * C[(row+3) * N + col];
+        if (row < M) {
+            float x = alpha * sum1f + beta * C[row * N + col];
+            C[row * N + col] = GELU_bool ? GELU(x) : x;
+            if (col + 1 < N) {
+                float x = alpha * sum1s + beta * C[row * N + col + 1];
+                C[row * N + col + 1] = GELU_bool ? GELU(x) : x;
+            }
+        }
+        if (row + 1 < M) {
+            float x = alpha * sum2f + beta * C[(row+1) * N + col];
+            C[(row+1) * N + col] = GELU_bool ? GELU(x) : x;
+            if (col + 1 < N) {
+                float x = alpha * sum2s + beta * C[(row+1) * N + col + 1];
+                C[(row+1) * N + col + 1] = GELU_bool ? GELU(x) : x;
+            }
+        }
+        if (row + 2 < M) {
+            float x = alpha * sum3f + beta * C[(row+2) * N + col];
+            C[(row+2) * N + col] = GELU_bool ? GELU(x) : x;
+            if (col + 1 < N) {
+                float x = alpha * sum3s + beta * C[(row+2) * N + col + 1];
+                C[(row+2) * N + col + 1] = GELU_bool ? GELU(x) : x;
+            }
+        }
+        if (row + 3 < M) {
+            float x = alpha * sum4f + beta * C[(row+3) * N + col];
+            C[(row+3) * N + col] = GELU_bool ? GELU(x) : x;
+            if (col + 1 < N) {
+                float x = alpha * sum4s + beta * C[(row+3) * N + col + 1];
+                C[(row+3) * N + col + 1] = GELU_bool ? GELU(x) : x;
+            }
+        }
     }
-
 }
 
 extern "C" cudaError_t launchGEMM(const float* A, const float* B, float* C,
-                                   int M, int N, int K, float alpha, float beta) {
+                                   int M, int N, int K, float alpha, float beta, bool GELU_bool=false) {
     dim3 threads(tilesize, tilesize);
-    dim3 blocks((N + threads.x - 1) / threads.x, 
+    dim3 blocks((N + threads.x * TN - 1) / (threads.x * TN), 
                 (M + threads.y * TM - 1) / (threads.y * TM));
-    GEMM<<<blocks, threads>>>(A, B, C, M, N, K, alpha, beta);
+    GEMM<<<blocks, threads>>>(A, B, C, M, N, K, alpha, beta, GELU_bool);
     return cudaGetLastError();
 }
 
