@@ -8,9 +8,9 @@ Optimized GEMM implemented under Tensor Parallelism using NCCL in a Transformer 
 ### TODO:
 - [x] Optimize GEMM and place the file in this workspace
 - [x] Triton FlashAttention implementation
-- [ ] Pytorch Transformer block implementation
+- [x] Pytorch Transformer block implementation
 - [x] Add GELU gated by a bool to gemm epilogue for linear layer 1 of MLP
-- [ ] Hook up QKV projections and MLP block to my GEMM backend.
+- [x] Hook up QKV projections and MLP block to my GEMM backend.
 - [ ] Split tensors to 8 GPUs
 - [ ] Use NCCL to coordinate the GEMM
 - [ ] Benchmark against single-GPU and multi-GPU standard pytorch implementations
