@@ -18,8 +18,10 @@ class myTPLinear(nn.Module):
     
     def forward(self, X, rank=0, tp_degree=1, row_parallel=False):
         W = self.weight if self.custom_GEMM else self.linear.weight
+        #if we choose a row-parallel layout, we shard W by rows (columns in this case because of transposed). This means we also
+        #shard X by columns (untransposed). 
         if row_parallel:
-            cols = W.shape[1] // tp_degree
+            cols = W.shape[1] // tp_degree # tp_degree "rows"
             c0 = rank * cols
             W = W[:, c0 : c0 + cols]
             if X.shape[-1] != cols:
@@ -74,7 +76,7 @@ class TransformerBlock(nn.Module):
     
 
 
-    # Column-parallel GEMM on this rank, then all_gather the output shards back to [B, N, out].
+    # Main function of this is just so we can all_gather shards. I'm using if for qkv 
     def tp(self, tp_linear, X):
         shard = tp_linear(X, self.tp_rank, self.TP_degree)
         B, N, s = shard.shape
@@ -109,8 +111,8 @@ class TransformerBlock(nn.Module):
         #Transpose and concatenate heads back to [B, N, d_model]
         X = X.transpose(1,2).contiguous().view(B, N, self.d_model)
 
-        #O projection and add back residual (full linear; attention already full [B,N,d])
-        X = self.wo(X)
+        #O projection and add back residual
+        X = self.tp(self.wo,X)
         X = X + residual
 
         #MLP block
@@ -123,7 +125,36 @@ class TransformerBlock(nn.Module):
 
         return X
 
-    def forward_single_GPU_reference(self, X): #must also initialize with custom_GEMM=False
+
+
+
+
+
+
+
+# BELOW: Reference iplementations
+
+import torch.distributed as dist
+
+class ReferenceTransformerBlock(nn.Module):
+    def __init__(self, d_model, heads, TP_degree=1, tp_rank=0):
+        super().__init__()
+        self.TP_degree = TP_degree
+        self.tp_rank = tp_rank
+        self.d_model = d_model
+        self.heads = heads
+        self.head_dim = d_model // heads
+
+        self.ln1 = nn.LayerNorm(d_model)
+        self.wq = nn.Linear(d_model, d_model, bias=False)
+        self.wk = nn.Linear(d_model, d_model, bias=False)
+        self.wv = nn.Linear(d_model, d_model, bias=False)
+        self.wo = nn.Linear(d_model, d_model, bias=False)
+        self.ln2 = nn.LayerNorm(d_model)
+        self.mlp_1 = nn.Linear(d_model, 4 * d_model, bias=False)
+        self.mlp_2 = nn.Linear(4 * d_model, d_model, bias=False)
+
+    def forward_single_GPU_reference(self, X):
         B, N, _ = X.shape #Batch size, sequence length, d_model
 
 
@@ -151,8 +182,35 @@ class TransformerBlock(nn.Module):
 
         residual = X
         X = self.ln2(X)
-        X = self.mlp_1(X)
+        X = F.gelu(self.mlp_1(X), approximate="tanh")
         X = self.mlp_2(X)
         X = X + residual
 
         return X
+
+    # Same TP layout as TransformerBlock.forward_tensor_parallel, using torch.distributed + SDPA.
+    def forward_tensor_parallel_reference(self, X):
+        B, N, _ = X.shape
+        r, tp = self.tp_rank, self.TP_degree
+
+        def col_gather(lin, X):
+            shard = F.linear(X, lin.weight.chunk(tp)[r])
+            out = torch.empty(tp, *shard.shape, device=X.device, dtype=X.dtype)
+            dist.all_gather_into_tensor(out, shard.contiguous())
+            return torch.cat(list(out), dim=-1)
+
+        residual = X
+        X = self.ln1(X)
+        Q = col_gather(self.wq, X).view(B, N, self.heads, self.head_dim).transpose(1, 2)
+        K = col_gather(self.wk, X).view(B, N, self.heads, self.head_dim).transpose(1, 2)
+        V = col_gather(self.wv, X).view(B, N, self.heads, self.head_dim).transpose(1, 2)
+        X = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+        X = X.transpose(1, 2).contiguous().view(B, N, self.d_model)
+        X = col_gather(self.wo, X) + residual
+
+        residual = X
+        X = self.ln2(X)
+        X = F.gelu(F.linear(X, self.mlp_1.weight.chunk(tp)[r]), approximate="tanh")
+        X = F.linear(X, self.mlp_2.weight.chunk(tp, dim=1)[r])
+        dist.all_reduce(X)
+        return X + residual
