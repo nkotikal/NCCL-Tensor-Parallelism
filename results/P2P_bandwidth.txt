@@ -1,0 +1,13 @@
+from link_bandwidth.py
+copy size 256 MiB, 20 reps
+host <-> device (pinned), GB/s
+  GPU0  H2D   23.5  D2H   25.2
+  GPU1  H2D   19.8  D2H   21.5
+  GPU2  H2D   20.3  D2H   25.2
+  GPU3  H2D   19.6  D2H   21.5
+GPU -> GPU, GB/s (peer access shown)
+  0 -> 1  peer=True   274.0
+  2 -> 3  peer=True   230.2
+  1 -> 2  peer=True     2.7
+  3 -> 0  peer=True     2.7
+  0 -> 2  peer=True     2.7

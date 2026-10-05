@@ -1,0 +1,28 @@
+B=2 N=16384 d=512 H=8 world=4  (ms per call, rank 0)
+
+[TP custom: myGEMM + NCCL bind + Triton attn]
+  gemm QKV/wo shard               0.428
+  gemm mlp_1 + GELU (fused)       1.585
+  gemm mlp_2 shard                1.572
+  attention (Triton)              9.820
+  all_gather 1 shard             12.901
+  all_reduce mlp_2               25.616
+  cat after gather                0.122
+  sum of parts per forward       92.395
+  full forward (measured)        90.000
+  busBW all_gather    3.9 GB/s, all_reduce    3.9 GB/s
+
+[TP ref: cuBLAS + torch.distributed + Triton attn]
+  gemm QKV/wo shard               0.259
+  gemm mlp_1 + GELU               1.023
+  gemm mlp_2 shard                0.923
+  attention (Triton)              9.820
+  all_gather 1 shard             12.904
+  all_reduce mlp_2               25.623
+  cat after gather                0.122
+  sum of parts per forward       90.529
+  full forward (measured)        88.192
+  busBW all_gather    3.9 GB/s, all_reduce    3.9 GB/s
+
+[single-GPU reference attention]
+  attention (SDPA)               30.060

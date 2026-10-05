@@ -1,0 +1,20 @@
+NCCL_DEBUG=INFO transport selection on the 4x A100 node (grep of /tmp/nccl_info.log)
+
+NCCL INFO NCCL version 2.28.9+cuda12.9
+NCCL INFO Channel 00/0 : 0[0] -> 1[1] via P2P/CUMEM/read
+NCCL INFO Channel 00 : 1[1] -> 2[2] via SHM/direct/direct
+NCCL INFO Channel 00/0 : 2[2] -> 3[3] via P2P/CUMEM/read
+NCCL INFO Channel 00 : 3[3] -> 0[0] via SHM/direct/direct
+NCCL INFO Channel 01/0 : 0[0] -> 1[1] via P2P/CUMEM/read
+NCCL INFO Channel 01 : 1[1] -> 2[2] via SHM/direct/direct
+NCCL INFO Channel 01/0 : 2[2] -> 3[3] via P2P/CUMEM/read
+NCCL INFO Channel 01 : 3[3] -> 0[0] via SHM/direct/direct
+NCCL INFO Channel 02/0 : 0[0] -> 1[1] via P2P/CUMEM/read
+NCCL INFO Channel 02 : 1[1] -> 2[2] via SHM/direct/direct
+NCCL INFO Channel 02/0 : 2[2] -> 3[3] via P2P/CUMEM/read
+NCCL INFO Channel 02 : 3[3] -> 0[0] via SHM/direct/direct
+NCCL INFO Channel 03/0 : 0[0] -> 1[1] via P2P/CUMEM/read
+NCCL INFO Channel 03 : 1[1] -> 2[2] via SHM/direct/direct
+NCCL INFO Channel 03/0 : 2[2] -> 3[3] via P2P/CUMEM/read
+NCCL INFO Channel 03 : 3[3] -> 0[0] via SHM/direct/direct
+NCCL INFO Connected all rings, use ring PXN 0 GDR 1
