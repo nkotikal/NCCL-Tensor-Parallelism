@@ -6,6 +6,7 @@
 
 import argparse
 import os
+import sys
 import time
 
 import torch
@@ -28,6 +29,11 @@ ATOL_SDPA = 1e-3
 ATOL_TRITON = 1e-2
 
 
+def _progress(rank, msg):
+    if rank == 0:
+        print(msg, file=sys.stderr, flush=True)
+
+
 def run(rank, world, uid, log_shapes):
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = "29500"
@@ -36,10 +42,32 @@ def run(rank, world, uid, log_shapes):
     dev = torch.device("cuda", rank)
 
     # dist: forward_tensor_parallel_reference
-    dist.init_process_group("nccl", rank=rank, world_size=world)
+    dist.init_process_group("nccl", rank=rank, world_size=world, device_id=rank)
 
     # bind_nccl init: forward_tensor_parallel
     initialize_nccl(rank, world, uid)
+    _progress(rank, "[rank 0] NCCL extension ready")
+
+    # JIT on every rank before any custom-path collective (else fast ranks hang in all_gather)
+    from kernels.flash_attention_triton import __fwd_kernel_flash as forward_attention
+    from kernels.load_gemm import _module as load_gemm_module, gemm
+
+    _progress(rank, "[rank 0] JIT compiling myGEMM (all ranks; can take several minutes)...")
+    load_gemm_module()
+    m, k, n = 64, 64, 64
+    a = torch.randn(m, k, device=dev)
+    b = torch.randn(k, n, device=dev)
+    c = torch.zeros(m, n, device=dev)
+    gemm(a, b, c)
+    torch.cuda.synchronize()
+    dist.barrier()
+    _progress(rank, "[rank 0] myGEMM ready; JIT compiling Triton attention...")
+    hw, nw, dw = H, 64, D // H
+    q = torch.randn(1, hw, nw, dw, device=dev)
+    forward_attention(q, q, q, causal=True)
+    torch.cuda.synchronize()
+    dist.barrier()
+    _progress(rank, "[rank 0] JIT warmup done; running forwards...")
 
     # shared weights (ref nn.Linear -> custom myGEMM)
     torch.manual_seed(0)
@@ -69,6 +97,7 @@ def run(rank, world, uid, log_shapes):
         log_result("correctness: single vs tp_ref (SDPA), custom vs tp_ref (Triton attn) ok")
 
     dist.barrier()
+    _progress(rank, "[rank 0] correctness ok; benchmarking...")
 
     # cuda timer + barrier for TP
     def ms(fn, reps=5):
