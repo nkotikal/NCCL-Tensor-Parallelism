@@ -1,4 +1,4 @@
-# python main.py [-o out.txt] [--shapes] [--reps N]
+# python main.py [-o out.txt] [-B batch] [-N seq] [--reps N] [--shapes]
 #
 # mp.spawn = start N fresh Python workers (one per GPU). CUDA needs spawn, not threads.
 
@@ -21,7 +21,9 @@ from transformer_block import (
     set_results_path,
 )
 
-B, N, D, H = 1, 8192, 512, 8
+D, H = 512, 8
+DEFAULT_BATCH = 1
+DEFAULT_SEQ_LEN = 8192
 ATOL_SDPA = 1e-3
 ATOL_TRITON = 1e-2
 
@@ -48,7 +50,7 @@ def _timed_forward(rank, fn, reps, rank0_only=False):
     return ms
 
 
-def run(rank, world, uid, log_shapes, output_path, bench_reps):
+def run(rank, world, uid, log_shapes, output_path, bench_reps, batch, seq_len):
     set_results_path(output_path)
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = "29500"
@@ -86,9 +88,9 @@ def run(rank, world, uid, log_shapes, output_path, bench_reps):
     custom.load_state_dict(ref.state_dict())
 
     if rank == 0:
-        x = torch.randn(B, N, D, device=dev)
+        x = torch.randn(batch, seq_len, D, device=dev)
     else:
-        x = torch.empty(B, N, D, device=dev)
+        x = torch.empty(batch, seq_len, D, device=dev)
     dist.broadcast(x, 0)
 
     # --- correctness: one path per phase (all ranks barrier between) ---
@@ -129,10 +131,11 @@ def run(rank, world, uid, log_shapes, output_path, bench_reps):
         )
 
     if rank == 0:
-        log_result(f"B={B} N={N} d={D} world={world}  (ms per forward, rank 0)")
-        log_result(f"  single_GPU_reference (SDPA):     {t_single:.2f}")
-        log_result(f"  tensor_parallel_reference:       {t_tp_ref:.2f}")
-        log_result(f"  tensor_parallel (GEMM+Triton):   {t_custom:.2f}")
+        tok = batch * seq_len
+        log_result(f"B={batch} N={seq_len} d={D} world={world}  (ms per forward, rank 0)")
+        log_result(f"  single_GPU_reference (SDPA):     {t_single:.2f}  ({tok / (t_single / 1e3):.0f} tok/s)")
+        log_result(f"  tensor_parallel_reference:       {t_tp_ref:.2f}  ({tok / (t_tp_ref / 1e3):.0f} tok/s)")
+        log_result(f"  tensor_parallel (GEMM+Triton):   {t_custom:.2f}  ({tok / (t_custom / 1e3):.0f} tok/s)")
 
     destroy()
     dist.destroy_process_group()
@@ -143,6 +146,8 @@ if __name__ == "__main__":
     p.add_argument("--shapes", action="store_true", help="log per-GPU shard/gather shapes for both TP paths")
     p.add_argument("-o", "--output", default="results.txt", help="benchmark/shape log file (default: results.txt)")
     p.add_argument("--reps", type=int, default=3, help="timed benchmark iterations per path (default: 3)")
+    p.add_argument("-B", "--batch", type=int, default=DEFAULT_BATCH, help="batch size (default: 1)")
+    p.add_argument("-N", "--seq-len", type=int, default=DEFAULT_SEQ_LEN, help="sequence length (default: 8192)")
     args = p.parse_args()
 
     set_results_path(args.output)
@@ -151,7 +156,7 @@ if __name__ == "__main__":
     uid = get_unique_id()
     mp.spawn(
         run,
-        args=(world, uid, args.shapes, args.output, args.reps),
+        args=(world, uid, args.shapes, args.output, args.reps, args.batch, args.seq_len),
         nprocs=world,
         join=True,
     )

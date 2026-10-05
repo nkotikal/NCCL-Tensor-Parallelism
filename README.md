@@ -4,8 +4,9 @@ Optimized GEMM implemented under Tensor Parallelism using NCCL in a PyTorch Tran
 Linux + CUDA + NCCL. One process per GPU (`torch.multiprocessing.spawn`):
 
 ```bash
-python main.py [-o out.txt]           # default -o results.txt
+python main.py [-o out.txt] [-B 4] [-N 16384] [--reps 3]
 python main.py --shapes -o shapes.txt
+python kernels/benchmark.py -o kernels/kernel_benchmarks_RTX5090.txt
 ```
 
 --------
