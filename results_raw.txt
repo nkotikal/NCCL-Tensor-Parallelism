@@ -1,5 +1,5 @@
 correctness: single vs tp_ref (SDPA), custom vs tp_ref (Triton attn) ok
-B=1 N=8192 d=512 world=4  (ms per forward, rank 0)
-  single_GPU_reference (SDPA):     7.06  (1159846 tok/s)
-  tensor_parallel_reference:       25.57  (320354 tok/s)
-  tensor_parallel (GEMM+Triton):   22.30  (367361 tok/s)
+B=2 N=16384 d=512 world=4  (ms per forward, rank 0)
+  single_GPU_reference (SDPA):     42.09  (778493 tok/s)
+  tensor_parallel_reference:       88.16  (371692 tok/s)
+  tensor_parallel (GEMM+Triton):   89.94  (364339 tok/s)

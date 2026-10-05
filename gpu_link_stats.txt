@@ -1,0 +1,63 @@
+For the tested 4xA100 node:
+
+Nvlink info adjacency matrix (ran nvidia-smi topo -m):
+
+        GPU0    GPU1    GPU2    GPU3    NIC0    NIC1    CPU Affinity    NUMA Affinity   GPU NUMA ID
+GPU0     X      NV12    NODE    NODE    NODE    NODE    0-95    0               N/A
+GPU1    NV12     X      NODE    NODE    NODE    NODE    0-95    0               N/A
+GPU2    NODE    NODE     X      NV10    NODE    NODE    0-95    0               N/A
+GPU3    NODE    NODE    NV10     X      NODE    NODE    0-95    0               N/A
+NIC0    NODE    NODE    NODE    NODE     X      PIX
+NIC1    NODE    NODE    NODE    NODE    PIX      X
+
+Legend:
+
+  X    = Self
+  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)
+  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node
+  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)
+  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)
+  PIX  = Connection traversing at most a single PCIe bridge
+  NV#  = Connection traversing a bonded set of # NVLinks
+
+NIC Legend:
+
+  NIC0: mlx5_0
+  NIC1: mlx5_1
+
+
+
+P2P Info: (ran nvidia-smi topo -p2p r and nvidia-smi topo -p2p w)
+
+        GPU0    GPU1    GPU2    GPU3
+ GPU0   X       OK      OK      OK
+ GPU1   OK      X       OK      OK
+ GPU2   OK      OK      X       OK
+ GPU3   OK      OK      OK      X
+
+Legend:
+
+  X    = Self
+  OK   = Status Ok
+  CNS  = Chipset not supported
+  GNS  = GPU not supported
+  TNS  = Topology not supported
+  NS   = Not supported
+  DR   = Disabled by regkey
+  U    = Unknown
+        GPU0    GPU1    GPU2    GPU3
+ GPU0   X       OK      OK      OK
+ GPU1   OK      X       OK      OK
+ GPU2   OK      OK      X       OK
+ GPU3   OK      OK      OK      X
+
+Legend:
+
+  X    = Self
+  OK   = Status Ok
+  CNS  = Chipset not supported
+  GNS  = GPU not supported
+  TNS  = Topology not supported
+  NS   = Not supported
+  DR   = Disabled by regkey
+  U    = Unknown

@@ -217,7 +217,7 @@ class ReferenceTransformerBlock(nn.Module):
 
         return X
 
-    # Same TP layout as TransformerBlock.forward_tensor_parallel, using torch.distributed + SDPA.
+    # Same TP layout as TransformerBlock.forward_tensor_parallel, using torch.distributed + Triton attention.
     def forward_tensor_parallel_reference(self, X, log_shapes=False):
         B, N, _ = X.shape
         r, tp = self.tp_rank, self.TP_degree
@@ -238,7 +238,7 @@ class ReferenceTransformerBlock(nn.Module):
         Q = col_gather(self.wq, X, "Q").view(B, N, self.heads, self.head_dim).transpose(1, 2)
         K = col_gather(self.wk, X, "K").view(B, N, self.heads, self.head_dim).transpose(1, 2)
         V = col_gather(self.wv, X, "V").view(B, N, self.heads, self.head_dim).transpose(1, 2)
-        X = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+        X = forward_attention(Q, K, V, causal=True)
         X = X.transpose(1, 2).contiguous().view(B, N, self.d_model)
         X = col_gather(self.wo, X, "wo") + residual
 

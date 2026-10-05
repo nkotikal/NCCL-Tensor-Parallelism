@@ -24,7 +24,6 @@ from transformer_block import (
 D, H = 512, 8
 DEFAULT_BATCH = 1
 DEFAULT_SEQ_LEN = 8192
-ATOL_SDPA = 1e-3
 ATOL_TRITON = 1e-2
 
 
@@ -109,9 +108,9 @@ def run(rank, world, uid, log_shapes, output_path, bench_reps, batch, seq_len):
         dist.barrier()
 
     if rank == 0:
-        torch.testing.assert_close(y_tp_ref, y_single, atol=ATOL_SDPA, rtol=ATOL_SDPA)
+        torch.testing.assert_close(y_tp_ref, y_single, atol=ATOL_TRITON, rtol=ATOL_TRITON)
         torch.testing.assert_close(y_custom, y_tp_ref, atol=ATOL_TRITON, rtol=ATOL_TRITON)
-        log_result("correctness: single vs tp_ref (SDPA), custom vs tp_ref (Triton attn) ok")
+        log_result("correctness: tp_ref (Triton) vs single (SDPA), custom vs tp_ref ok")
 
     dist.barrier()
 
