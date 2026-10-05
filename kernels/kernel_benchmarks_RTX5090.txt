@@ -1,6 +1,9 @@
-# Run on RTX 5090 (repo root):
-#   python kernels/benchmark.py -o kernels/kernel_benchmarks_RTX5090.txt
-#
-# Optional shapes:
-#   python kernels/benchmark.py -o kernels/kernel_benchmarks_RTX5090.txt --gemm-m 4096 --gemm-k 4096 --gemm-n 4096
-#   python kernels/benchmark.py -o kernels/kernel_benchmarks_RTX5090.txt --attn-n 8192 --attn-b 1 --attn-h 8 --attn-d 64
+# kernel benchmarks  2026-10-05T04:38:26.154695+00:00
+# device: NVIDIA GeForce RTX 5060 Laptop GPU
+GEMM  M=2048 K=2048 N=2048  gelu=False
+  myGEMM       3.000 ms
+  torch.matmul 1.738 ms  (0.58x vs custom)
+
+Attention  B=2 H=8 N=1024 d=64  causal=True
+  Triton flash 0.184 ms
+  SDPA         0.516 ms  (2.80x vs Triton)
