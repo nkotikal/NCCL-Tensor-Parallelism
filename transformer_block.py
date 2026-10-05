@@ -5,6 +5,19 @@ import torch.nn.functional as F
 from kernels.load_gemm import gemm as myGEMM
 from nccl.load_nccl import all_gather, all_reduce_sum
 
+RESULTS_PATH = "results.txt"
+
+
+def log_result(msg: str) -> None:
+    with open(RESULTS_PATH, "a", encoding="utf-8") as f:
+        f.write(msg + "\n")
+
+
+def clear_results() -> None:
+    with open(RESULTS_PATH, "w", encoding="utf-8") as f:
+        pass
+
+
 class myTPLinear(nn.Module):
     def __init__(self, in_features, out_features, custom_GEMM=False, GELU=False):
         super().__init__()
@@ -77,16 +90,21 @@ class TransformerBlock(nn.Module):
 
 
     # Main function of this is just so we can all_gather shards. I'm using if for qkv 
-    def tp(self, tp_linear, X):
+    def tp(self, tp_linear, X, tag="", log_shapes=False):
         shard = tp_linear(X, self.tp_rank, self.TP_degree)
         B, N, s = shard.shape
+        if log_shapes:
+            log_result(f"[custom gpu {self.tp_rank}] {tag} cp_shard {tuple(shard.shape)}")
         # ncclAllGather stacks rank buffers along the first dim: out[r] is rank r's shard
         out = torch.empty(self.TP_degree, B, N, s, device=X.device, dtype=X.dtype)
         all_gather(shard.contiguous(), out)
-        return torch.cat(list(out), dim=-1)
+        full = torch.cat(list(out), dim=-1)
+        if log_shapes:
+            log_result(f"[custom gpu {self.tp_rank}] {tag} after_gather {tuple(full.shape)}")
+        return full
 
     #TEST UNIT. This is my primary tensor parallel implementation of decoder block forward pass. 
-    def forward_tensor_parallel(self, X):
+    def forward_tensor_parallel(self, X, log_shapes=False):
         B, N, _ = X.shape #Batch size, sequence length, d_model
 
 
@@ -97,9 +115,9 @@ class TransformerBlock(nn.Module):
         #LayerNorm, QKV projection
         X = self.ln1(X)
 
-        Q = self.tp(self.wq, X)
-        K = self.tp(self.wk, X)
-        V = self.tp(self.wv, X)
+        Q = self.tp(self.wq, X, "Q", log_shapes)
+        K = self.tp(self.wk, X, "K", log_shapes)
+        V = self.tp(self.wv, X, "V", log_shapes)
         
         #Split into heads and transpose to get the shape [B, heads, N, head_dim] for triton MHA.
         Q = Q.view(B, N, self.heads, self.head_dim).transpose(1,2)
@@ -112,15 +130,21 @@ class TransformerBlock(nn.Module):
         X = X.transpose(1,2).contiguous().view(B, N, self.d_model)
 
         #O projection and add back residual
-        X = self.tp(self.wo,X)
+        X = self.tp(self.wo, X, "wo", log_shapes)
         X = X + residual
 
         #MLP block
         residual = X
         X = self.ln2(X)
         X = self.mlp_1(X, self.tp_rank, self.TP_degree)
+        if log_shapes:
+            log_result(f"[custom gpu {self.tp_rank}] mlp_1 cp_shard {tuple(X.shape)}")
         X = self.mlp_2(X, self.tp_rank, self.TP_degree, row_parallel=True)
+        if log_shapes:
+            log_result(f"[custom gpu {self.tp_rank}] mlp_2 rp_partial {tuple(X.shape)}")
         all_reduce_sum(X)
+        if log_shapes:
+            log_result(f"[custom gpu {self.tp_rank}] mlp_2 after_allreduce {tuple(X.shape)}")
         X = X + residual
 
         return X
@@ -189,28 +213,39 @@ class ReferenceTransformerBlock(nn.Module):
         return X
 
     # Same TP layout as TransformerBlock.forward_tensor_parallel, using torch.distributed + SDPA.
-    def forward_tensor_parallel_reference(self, X):
+    def forward_tensor_parallel_reference(self, X, log_shapes=False):
         B, N, _ = X.shape
         r, tp = self.tp_rank, self.TP_degree
 
-        def col_gather(lin, X):
+        def col_gather(lin, X, tag=""):
             shard = F.linear(X, lin.weight.chunk(tp)[r])
+            if log_shapes:
+                log_result(f"[tp_ref gpu {r}] {tag} cp_shard {tuple(shard.shape)}")
             out = torch.empty(tp, *shard.shape, device=X.device, dtype=X.dtype)
             dist.all_gather_into_tensor(out, shard.contiguous())
-            return torch.cat(list(out), dim=-1)
+            full = torch.cat(list(out), dim=-1)
+            if log_shapes:
+                log_result(f"[tp_ref gpu {r}] {tag} after_gather {tuple(full.shape)}")
+            return full
 
         residual = X
         X = self.ln1(X)
-        Q = col_gather(self.wq, X).view(B, N, self.heads, self.head_dim).transpose(1, 2)
-        K = col_gather(self.wk, X).view(B, N, self.heads, self.head_dim).transpose(1, 2)
-        V = col_gather(self.wv, X).view(B, N, self.heads, self.head_dim).transpose(1, 2)
+        Q = col_gather(self.wq, X, "Q").view(B, N, self.heads, self.head_dim).transpose(1, 2)
+        K = col_gather(self.wk, X, "K").view(B, N, self.heads, self.head_dim).transpose(1, 2)
+        V = col_gather(self.wv, X, "V").view(B, N, self.heads, self.head_dim).transpose(1, 2)
         X = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
         X = X.transpose(1, 2).contiguous().view(B, N, self.d_model)
-        X = col_gather(self.wo, X) + residual
+        X = col_gather(self.wo, X, "wo") + residual
 
         residual = X
         X = self.ln2(X)
         X = F.gelu(F.linear(X, self.mlp_1.weight.chunk(tp)[r]), approximate="tanh")
+        if log_shapes:
+            log_result(f"[tp_ref gpu {r}] mlp_1 cp_shard {tuple(X.shape)}")
         X = F.linear(X, self.mlp_2.weight.chunk(tp, dim=1)[r])
+        if log_shapes:
+            log_result(f"[tp_ref gpu {r}] mlp_2 rp_partial {tuple(X.shape)}")
         dist.all_reduce(X)
+        if log_shapes:
+            log_result(f"[tp_ref gpu {r}] mlp_2 after_allreduce {tuple(X.shape)}")
         return X + residual

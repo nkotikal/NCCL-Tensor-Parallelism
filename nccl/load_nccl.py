@@ -1,4 +1,4 @@
-"""Minimal NCCL C API via JIT extension. Gather / P2P: use torch.distributed in Python."""
+
 
 from functools import cache
 from pathlib import Path
@@ -36,10 +36,6 @@ def destroy() -> None:
 
 def all_reduce_sum(tensor) -> None:
     _ext().all_reduce_sum(tensor)
-
-
-def broadcast(tensor, root: int = 0) -> None:
-    _ext().broadcast(tensor, root)
 
 
 def all_gather(input_tensor, output_tensor) -> None:
