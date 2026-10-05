@@ -1,7 +1,6 @@
-# python main.py [-o out.txt] [--shapes]
+# python main.py [-o out.txt] [--shapes] [--reps N]
 #
 # mp.spawn = start N fresh Python workers (one per GPU). CUDA needs spawn, not threads.
-# Same idea as torchrun; you could use Process(...).start() in a loop instead.
 
 import argparse
 import os
@@ -22,9 +21,7 @@ from transformer_block import (
     set_results_path,
 )
 
-# benchmark shape
 B, N, D, H = 1, 8192, 512, 8
-# Triton attn -> looser tol than SDPA
 ATOL_SDPA = 1e-3
 ATOL_TRITON = 1e-2
 
@@ -34,7 +31,24 @@ def _progress(rank, msg):
         print(msg, file=sys.stderr, flush=True)
 
 
-def run(rank, world, uid, log_shapes, output_path):
+def _timed_forward(rank, fn, reps, rank0_only=False):
+    """One benchmark path. All ranks enter/exit barriers; rank0_only skips fn on other ranks."""
+    dist.barrier()
+    ms = 0.0
+    if not rank0_only or rank == 0:
+        for _ in range(2):
+            fn()
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        for _ in range(reps):
+            fn()
+        torch.cuda.synchronize()
+        ms = (time.perf_counter() - t0) / reps * 1e3
+    dist.barrier()
+    return ms
+
+
+def run(rank, world, uid, log_shapes, output_path, bench_reps):
     set_results_path(output_path)
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = "29500"
@@ -42,14 +56,10 @@ def run(rank, world, uid, log_shapes, output_path):
     torch.cuda.set_device(rank)
     dev = torch.device("cuda", rank)
 
-    # dist: forward_tensor_parallel_reference
     dist.init_process_group("nccl", rank=rank, world_size=world, device_id=rank)
-
-    # bind_nccl init: forward_tensor_parallel
     initialize_nccl(rank, world, uid)
     _progress(rank, "[rank 0] NCCL extension ready")
 
-    # JIT on every rank before any custom-path collective (else fast ranks hang in all_gather)
     from kernels.flash_attention_triton import __fwd_kernel_flash as forward_attention
     from kernels.load_gemm import _module as load_gemm_module, gemm
 
@@ -68,28 +78,32 @@ def run(rank, world, uid, log_shapes, output_path):
     forward_attention(q, q, q, causal=True)
     torch.cuda.synchronize()
     dist.barrier()
-    _progress(rank, "[rank 0] JIT warmup done; running forwards...")
+    _progress(rank, "[rank 0] JIT warmup done")
 
-    # shared weights (ref nn.Linear -> custom myGEMM)
     torch.manual_seed(0)
     ref = ReferenceTransformerBlock(D, H, TP_degree=world, tp_rank=rank).to(dev).eval()
     custom = TransformerBlock(D, H, TP_degree=world, tp_rank=rank, custom_GEMM=True).to(dev).eval()
     custom.load_state_dict(ref.state_dict())
 
-    # same X on all ranks
     if rank == 0:
         x = torch.randn(B, N, D, device=dev)
     else:
         x = torch.empty(B, N, D, device=dev)
     dist.broadcast(x, 0)
 
-    # three forwards, compare on rank 0
+    # --- correctness: one path per phase (all ranks barrier between) ---
     with torch.no_grad():
-        y_single = ref.forward_single_GPU_reference(x) if rank == 0 else None
+        _progress(rank, "[rank 0] correctness: tensor_parallel_reference...")
+        dist.barrier()
         y_tp_ref = ref.forward_tensor_parallel_reference(x, log_shapes=log_shapes)
-        y_custom = custom.forward_tensor_parallel(x, log_shapes=log_shapes)
+        dist.barrier()
 
-    if log_shapes:
+        _progress(rank, "[rank 0] correctness: tensor_parallel (custom)...")
+        y_custom = custom.forward_tensor_parallel(x, log_shapes=log_shapes)
+        dist.barrier()
+
+        _progress(rank, "[rank 0] correctness: single_GPU_reference (rank 0)...")
+        y_single = ref.forward_single_GPU_reference(x) if rank == 0 else None
         dist.barrier()
 
     if rank == 0:
@@ -98,24 +112,21 @@ def run(rank, world, uid, log_shapes, output_path):
         log_result("correctness: single vs tp_ref (SDPA), custom vs tp_ref (Triton attn) ok")
 
     dist.barrier()
-    _progress(rank, "[rank 0] correctness ok; benchmarking...")
 
-    # cuda timer + barrier for TP
-    def ms(fn, reps=5):
-        for _ in range(2):
-            fn()
-        torch.cuda.synchronize()
-        t0 = time.perf_counter()
-        for _ in range(reps):
-            fn()
-        torch.cuda.synchronize()
-        dist.barrier()
-        return (time.perf_counter() - t0) / reps * 1e3
-
+    # --- benchmark: three separate timed sections ---
     with torch.no_grad():
-        t_single = ms(lambda: ref.forward_single_GPU_reference(x)) if rank == 0 else 0.0
-        t_tp_ref = ms(lambda: ref.forward_tensor_parallel_reference(x))
-        t_custom = ms(lambda: custom.forward_tensor_parallel(x))
+        _progress(rank, "[rank 0] benchmark: tensor_parallel_reference...")
+        t_tp_ref = _timed_forward(
+            rank, lambda: ref.forward_tensor_parallel_reference(x), bench_reps
+        )
+
+        _progress(rank, "[rank 0] benchmark: tensor_parallel (custom)...")
+        t_custom = _timed_forward(rank, lambda: custom.forward_tensor_parallel(x), bench_reps)
+
+        _progress(rank, "[rank 0] benchmark: single_GPU_reference (rank 0)...")
+        t_single = _timed_forward(
+            rank, lambda: ref.forward_single_GPU_reference(x), bench_reps, rank0_only=True
+        )
 
     if rank == 0:
         log_result(f"B={B} N={N} d={D} world={world}  (ms per forward, rank 0)")
@@ -131,10 +142,16 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--shapes", action="store_true", help="log per-GPU shard/gather shapes for both TP paths")
     p.add_argument("-o", "--output", default="results.txt", help="benchmark/shape log file (default: results.txt)")
+    p.add_argument("--reps", type=int, default=3, help="timed benchmark iterations per path (default: 3)")
     args = p.parse_args()
 
     set_results_path(args.output)
     clear_results()
     world = torch.cuda.device_count()
     uid = get_unique_id()
-    mp.spawn(run, args=(world, uid, args.shapes, args.output), nprocs=world, join=True)
+    mp.spawn(
+        run,
+        args=(world, uid, args.shapes, args.output, args.reps),
+        nprocs=world,
+        join=True,
+    )
