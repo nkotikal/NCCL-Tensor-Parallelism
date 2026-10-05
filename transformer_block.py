@@ -8,6 +8,11 @@ from nccl.load_nccl import all_gather, all_reduce_sum
 RESULTS_PATH = "results.txt"
 
 
+def set_results_path(path: str) -> None:
+    global RESULTS_PATH
+    RESULTS_PATH = path
+
+
 def log_result(msg: str) -> None:
     with open(RESULTS_PATH, "a", encoding="utf-8") as f:
         f.write(msg + "\n")

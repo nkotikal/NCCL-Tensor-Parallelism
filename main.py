@@ -1,5 +1,4 @@
-# python main.py          — benchmark; rank-0 lines go to results.txt
-# python main.py --shapes — also log per-GPU shard/gather shapes to results.txt, then benchmark
+# python main.py [-o out.txt] [--shapes]
 #
 # mp.spawn = start N fresh Python workers (one per GPU). CUDA needs spawn, not threads.
 # Same idea as torchrun; you could use Process(...).start() in a loop instead.
@@ -20,6 +19,7 @@ from transformer_block import (
     TransformerBlock,
     clear_results,
     log_result,
+    set_results_path,
 )
 
 # benchmark shape
@@ -34,7 +34,8 @@ def _progress(rank, msg):
         print(msg, file=sys.stderr, flush=True)
 
 
-def run(rank, world, uid, log_shapes):
+def run(rank, world, uid, log_shapes, output_path):
+    set_results_path(output_path)
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = "29500"
 
@@ -129,9 +130,11 @@ def run(rank, world, uid, log_shapes):
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--shapes", action="store_true", help="log per-GPU shard/gather shapes for both TP paths")
+    p.add_argument("-o", "--output", default="results.txt", help="benchmark/shape log file (default: results.txt)")
     args = p.parse_args()
 
+    set_results_path(args.output)
     clear_results()
     world = torch.cuda.device_count()
     uid = get_unique_id()
-    mp.spawn(run, args=(world, uid, args.shapes), nprocs=world, join=True)
+    mp.spawn(run, args=(world, uid, args.shapes, args.output), nprocs=world, join=True)
