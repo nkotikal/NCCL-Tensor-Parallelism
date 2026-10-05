@@ -1,0 +1,9 @@
+# kernel benchmarks  2026-10-05T02:59:29.662902+00:00
+# device: NVIDIA A100-SXM4-40GB
+GEMM  M=2048 K=2048 N=2048  gelu=False
+  myGEMM       1.926 ms
+  torch.matmul 1.003 ms  (0.52x vs custom)
+
+Attention  B=2 H=8 N=1024 d=64  causal=True
+  Triton flash 0.085 ms
+  SDPA         0.252 ms  (2.98x vs Triton)
