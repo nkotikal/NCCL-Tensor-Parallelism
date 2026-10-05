@@ -9,20 +9,24 @@
 //pointer to comm. Filled by ncclCommInitRank
 static ncclComm_t g_comm = nullptr;
 
-std::string get_unique_id() {
+py::bytes get_unique_id() {
     ncclUniqueId id;
     if (ncclGetUniqueId(&id) != ncclSuccess) {
         throw std::runtime_error("ncclGetUniqueId failed");
     }
-    return std::string(reinterpret_cast<char*>(&id), sizeof(id));
+    return py::bytes(reinterpret_cast<const char*>(&id), sizeof(id));
 }
 
-void init_comm(int rank, int world_size, const std::string& id_bytes) {
+void init_comm(int rank, int world_size, const py::bytes& id_bytes) {
     if (g_comm) { 
         throw std::runtime_error("nccl already initialized");
     }
+    std::string raw = id_bytes;
+    if (raw.size() != sizeof(ncclUniqueId)) {
+        throw std::runtime_error("unique_id has wrong length");
+    }
     ncclUniqueId id;
-    std::memcpy(&id, id_bytes.data(), sizeof(id));
+    std::memcpy(&id, raw.data(), sizeof(id));
     if (ncclCommInitRank(&g_comm, world_size, id, rank) != ncclSuccess) { //world_size = nranks
         throw std::runtime_error("ncclCommInitRank failed");
     }
