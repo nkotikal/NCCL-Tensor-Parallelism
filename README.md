@@ -59,7 +59,7 @@ dbaaa2700fd2:1890:1890 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[1] via P2P/CUMEM/r
 ```
 
 Between GPUs 2<->3 and 0<->1 which have NVLink, NCCL chooses to use P2P. However, for all other connections,
-it chooses to go through PCIe SHM (shared host memory), implying that SHM could be better than the non-NVLink P2P on this node.
+it chooses to go through PCIe SHM (shared memory, I believe this is not P2P but instead goes through host), implying that SHM could be better than the non-NVLink P2P on this node.
 
 I tried proving this by running `profile_ops.py` with `export NCCL_P2P_LEVEL=SYS`. I thought this might allow P2P use instead of host bridge regardless of whether NVLink is available. However, the process hangs after the graph is created and I'm not able to get around it. Debug output and nvidia-smi revealed 100% utilization but relatively low power draw at around 50W/400W, and the P2P/CUMEM desired paths (such as 1[1] -> 2[2] were indeed being used, but I was unable to find the source of the hang as of yet. 
 
